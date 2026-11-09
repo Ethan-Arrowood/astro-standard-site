@@ -1,0 +1,41 @@
+{
+  "name": "@arrowood.dev/astro-standard-site",
+  "version": "0.0.0",
+  "description": "Astro integration that publishes your site to the ATmosphere using Standard.site lexicons.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "astro-integration",
+    "withastro",
+    "astro",
+    "atproto",
+    "bluesky",
+    "standard.site"
+  ],
+  "exports": {
+    ".": "./standardSiteIntegration.ts",
+    "./site.standard.publication.ts": "./site.standard.publication.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "standardSiteIntegration.ts",
+    "site.standard.publication.ts",
+    "astro-standard-site.d.ts",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "astro": ">=5.0.0"
+  },
+  "dependencies": {
+    "@atproto/lex": "0.3.0",
+    "@atproto/lex-password-session": "0.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "astro": "6.1.9",
+    "typescript": "7.0.2"
+  }
+}

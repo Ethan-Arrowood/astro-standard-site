@@ -1,0 +1,1 @@
+declare const __STANDARD_SITE_DID__: string;
