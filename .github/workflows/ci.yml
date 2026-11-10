@@ -36,30 +36,5 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Install the packed tarball the way a consumer would, outside the repo,
-      # and check that the built entry point and its route file load.
       - name: Smoke-test the package
-        run: |
-          npm pack --pack-destination "$RUNNER_TEMP"
-          mkdir "$RUNNER_TEMP/consumer"
-          cd "$RUNNER_TEMP/consumer"
-          npm init -y > /dev/null
-          npm install "$RUNNER_TEMP"/arrowood.dev-astro-standard-site-*.tgz astro
-          node --input-type=module -e '
-            const { default: standardSite, generateTid } = await import("@arrowood.dev/astro-standard-site");
-            const { access } = await import("node:fs/promises");
-            let entrypoint;
-            await standardSite({
-              identifier: "did:plc:example",
-              publication: { rkey: generateTid(), name: "Smoke test" },
-            }).hooks["astro:config:setup"]({
-              command: "dev",
-              config: { root: new URL("file:///tmp/"), srcDir: new URL("file:///tmp/src/") },
-              updateConfig() {},
-              injectRoute(route) { entrypoint = route.entrypoint; },
-              logger: { info() {} },
-            });
-            await access(entrypoint);
-            console.log("Loaded", entrypoint.href);
-          '
-          npx astro-standard-site-keys "nothing/*.md"
+        run: npm run smoke-test

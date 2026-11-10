@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.build.json && cp astro-standard-site.d.ts dist/",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "smoke-test": "node scripts/smoke-test.ts"
   },
   "keywords": [
     "astro-integration",
