@@ -210,13 +210,15 @@ export async function putRecords(
 
 /** Source of the virtual module, with the resolved DID baked in. */
 function virtualModuleSource(did: string, publicationUri: string): string {
-	return [
-		`export const did = ${JSON.stringify(did)};`,
-		`export const publicationUri = ${JSON.stringify(publicationUri)};`,
-		"export function documentUri(rkey) {",
-		`\treturn rkey ? \`at://\${did}/${DOCUMENT_COLLECTION}/\${rkey}\` : undefined;`,
-		"}",
-	].join("\n");
+	const documentPrefix = `at://${did}/${DOCUMENT_COLLECTION}/`;
+
+	return `
+export const did = ${JSON.stringify(did)};
+export const publicationUri = ${JSON.stringify(publicationUri)};
+export function documentUri(rkey) {
+	return rkey ? ${JSON.stringify(documentPrefix)} + rkey : undefined;
+}
+`;
 }
 
 export default function standardSite(
