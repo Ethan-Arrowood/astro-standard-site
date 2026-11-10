@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, it, mock } from "node:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, before, after, describe, it, mock } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { PasswordSession } from "@atproto/lex-password-session";
 import { isValidTid } from "@atproto/syntax";
@@ -9,7 +13,7 @@ import standardSite, {
 	buildPublicationRecord,
 	generateTid,
 	resolveDid,
-	upsertPublication,
+	putRecords,
 	type PublicationRecord,
 } from "./standardSiteIntegration.ts";
 
@@ -227,25 +231,38 @@ describe("buildPublicationRecord", () => {
 	});
 });
 
-describe("upsertPublication", () => {
-	it("logs in and puts the record at the given rkey in the session's repo", async () => {
+describe("putRecords", () => {
+	const DOC_RKEY = "3lzyqkfxmsc2k";
+	const DOC = {
+		$type: "site.standard.document",
+		site: `at://${DID}/site.standard.publication/${RKEY}`,
+		path: "/blog/post",
+		title: "Post",
+		publishedAt: "2026-01-13T18:00:00.000Z",
+	} as const;
+
+	it("logs in once and puts each record at its rkey in the session's repo", async () => {
 		const { login, requests, dispose } = stubLogin(DID);
 
-		await upsertPublication(SERVICE, "arrowood.dev", DID, RKEY, RECORD, "app-password");
+		await putRecords(SERVICE, "arrowood.dev", DID, "app-password", [
+			{ rkey: RKEY, record: RECORD },
+			{ rkey: DOC_RKEY, record: DOC },
+		]);
 
+		assert.equal(login.mock.callCount(), 1);
 		assert.deepEqual(login.mock.calls[0]?.arguments[0], {
 			service: SERVICE,
 			identifier: "arrowood.dev",
 			password: "app-password",
 		});
-		assert.equal(requests.length, 1);
-		assert.equal(requests[0]?.path, "/xrpc/com.atproto.repo.putRecord");
-		assert.deepEqual(requests[0]?.body, {
-			repo: DID,
-			collection: "site.standard.publication",
-			rkey: RKEY,
-			record: RECORD,
-		});
+		assert.deepEqual(
+			requests.map((request) => request.path),
+			["/xrpc/com.atproto.repo.putRecord", "/xrpc/com.atproto.repo.putRecord"],
+		);
+		assert.deepEqual(requests.map((request) => request.body), [
+			{ repo: DID, collection: "site.standard.publication", rkey: RKEY, record: RECORD },
+			{ repo: DID, collection: "site.standard.document", rkey: DOC_RKEY, record: DOC },
+		]);
 		assert.equal(dispose.mock.callCount(), 1);
 	});
 
@@ -253,7 +270,9 @@ describe("upsertPublication", () => {
 		const { requests, dispose } = stubLogin("did:plc:someoneelse");
 
 		await assert.rejects(
-			upsertPublication(SERVICE, "arrowood.dev", DID, RKEY, RECORD, "app-password"),
+			putRecords(SERVICE, "arrowood.dev", DID, "app-password", [
+				{ rkey: RKEY, record: RECORD },
+			]),
 			(error: Error) => {
 				assert.match(error.message, /did:plc:someoneelse/);
 				assert.match(error.message, new RegExp(DID));
@@ -272,8 +291,34 @@ describe("astro:config:setup", () => {
 		NonNullable<AstroIntegration["hooks"]["astro:config:setup"]>
 	>[0];
 
+	interface VitePlugin {
+		resolveId(id: string): string | undefined;
+		load(id: string): string | undefined;
+	}
+
 	const ENV_KEYS = ["ENABLE_REPO_WRITE", "BSKY_APP_PASSWORD"] as const;
 	const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+
+	// A throwaway Astro project with two posts, one missing its record key.
+	let root: string;
+	const KEYED_RKEY = "3lzyqkfxmsc2k";
+
+	before(async () => {
+		root = await mkdtemp(path.join(tmpdir(), "astro-standard-site-"));
+		await mkdir(path.join(root, "src/pages/blog"), { recursive: true });
+		await writeFile(
+			path.join(root, "src/pages/blog/keyed.md"),
+			`---\ntitle: "Keyed"\npubDate: 2026-01-13T12:00:00-06:00\nstandardSiteRkey: "${KEYED_RKEY}"\n---\n\nBody\n`,
+		);
+		await writeFile(
+			path.join(root, "src/pages/blog/unkeyed.md"),
+			"---\ntitle: \"Unkeyed\"\npubDate: 2026-02-01T12:00:00-06:00\n---\n\nBody\n",
+		);
+	});
+
+	after(async () => {
+		await rm(root, { recursive: true, force: true });
+	});
 
 	afterEach(() => {
 		for (const key of ENV_KEYS) {
@@ -290,12 +335,20 @@ describe("astro:config:setup", () => {
 	}
 
 	/** Run the hook with a DID identifier, so resolveDid never fetches. */
-	async function runSetup(command: SetupParams["command"], rkey = RKEY) {
+	async function runSetup(
+		command: SetupParams["command"],
+		{ rkey = RKEY, pattern }: { rkey?: string; pattern?: string } = {},
+	) {
 		const injectRoute = mock.fn();
 		const updateConfig = mock.fn();
+		const rootUrl = pathToFileURL(`${root}/`);
 		const params = {
 			command,
-			config: { site: "https://ethanarrowood.com" },
+			config: {
+				site: "https://ethanarrowood.com",
+				root: rootUrl,
+				srcDir: new URL("src/", rootUrl),
+			},
 			updateConfig,
 			injectRoute,
 			logger: { info: mock.fn() },
@@ -304,9 +357,14 @@ describe("astro:config:setup", () => {
 		await standardSite({
 			identifier: DID,
 			publication: { rkey, name: "Ethan Arrowood" },
+			...(pattern !== undefined && { documents: { pattern } }),
 		}).hooks["astro:config:setup"]?.(params);
 
-		return { injectRoute, updateConfig };
+		const config = updateConfig.mock.calls[0]?.arguments[0] as
+			| { vite: { plugins: VitePlugin[] } }
+			| undefined;
+
+		return { injectRoute, plugin: config?.vite.plugins[0] };
 	}
 
 	for (const [label, command, env] of [
@@ -329,23 +387,27 @@ describe("astro:config:setup", () => {
 		setEnv({});
 		forbiddenFetch();
 
-		await assert.rejects(runSetup("dev", "self"), /publication.rkey must be a TID/);
+		await assert.rejects(runSetup("dev", { rkey: "self" }), /publication.rkey must be a TID/);
 	});
 
-	it("hands the publication AT-URI to the .well-known route", async () => {
+	it("serves the AT-URIs through the virtual module", async () => {
 		setEnv({});
 
-		const { updateConfig } = await runSetup("dev");
+		const { plugin } = await runSetup("dev");
+		const resolved = plugin?.resolveId("virtual:astro-standard-site");
+		assert.ok(resolved);
+		assert.equal(plugin?.resolveId("some-other-module"), undefined);
 
-		assert.deepEqual(updateConfig.mock.calls[0]?.arguments[0], {
-			vite: {
-				define: {
-					__STANDARD_SITE_PUBLICATION_URI__: JSON.stringify(
-						`at://${DID}/site.standard.publication/${RKEY}`,
-					),
-				},
-			},
-		});
+		const source = plugin?.load(resolved) ?? "";
+		const mod = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+
+		assert.equal(mod.did, DID);
+		assert.equal(mod.publicationUri, `at://${DID}/site.standard.publication/${RKEY}`);
+		assert.equal(
+			mod.documentUri(KEYED_RKEY),
+			`at://${DID}/site.standard.document/${KEYED_RKEY}`,
+		);
+		assert.equal(mod.documentUri(undefined), undefined);
 	});
 
 	it("throws when writes are enabled without BSKY_APP_PASSWORD", async () => {
@@ -362,13 +424,48 @@ describe("astro:config:setup", () => {
 
 		await runSetup("build");
 
-		assert.equal(requests.length, 1);
-		assert.deepEqual(requests[0]?.body, {
-			repo: DID,
-			collection: "site.standard.publication",
-			rkey: RKEY,
-			record: RECORD,
-		});
+		assert.deepEqual(requests.map((request) => request.body), [
+			{ repo: DID, collection: "site.standard.publication", rkey: RKEY, record: RECORD },
+		]);
+	});
+
+	it("refuses to write when a post has no record key, naming the post", async () => {
+		setEnv({ ENABLE_REPO_WRITE: "true", BSKY_APP_PASSWORD: "app-password" });
+		const { login } = stubLogin(DID);
+
+		await assert.rejects(
+			runSetup("build", { pattern: "src/pages/blog/*.md" }),
+			(error: Error) => {
+				assert.match(error.message, /unkeyed\.md/);
+				assert.doesNotMatch(error.message, /\bkeyed\.md/);
+				assert.match(error.message, /astro-standard-site-keys/);
+				return true;
+			},
+		);
+		assert.equal(login.mock.callCount(), 0);
+	});
+
+	it("writes a document record for each keyed post after the publication", async () => {
+		setEnv({ ENABLE_REPO_WRITE: "true", BSKY_APP_PASSWORD: "app-password" });
+		const { requests } = stubLogin(DID);
+
+		await runSetup("build", { pattern: "src/pages/blog/keyed.md" });
+
+		assert.deepEqual(requests.map((request) => request.body), [
+			{ repo: DID, collection: "site.standard.publication", rkey: RKEY, record: RECORD },
+			{
+				repo: DID,
+				collection: "site.standard.document",
+				rkey: KEYED_RKEY,
+				record: {
+					$type: "site.standard.document",
+					site: `at://${DID}/site.standard.publication/${RKEY}`,
+					path: "/blog/keyed",
+					title: "Keyed",
+					publishedAt: "2026-01-13T18:00:00.000Z",
+				},
+			},
+		]);
 	});
 });
 

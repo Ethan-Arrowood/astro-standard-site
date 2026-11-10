@@ -20,8 +20,14 @@
     "./site.standard.publication.ts": "./site.standard.publication.ts",
     "./package.json": "./package.json"
   },
+  "bin": {
+    "astro-standard-site-keys": "./keys.ts"
+  },
   "files": [
     "standardSiteIntegration.ts",
+    "documents.ts",
+    "tid.ts",
+    "keys.ts",
     "site.standard.publication.ts",
     "astro-standard-site.d.ts",
     "README.md"
@@ -32,7 +38,8 @@
   "dependencies": {
     "@atproto/lex": "0.3.0",
     "@atproto/lex-password-session": "0.1.8",
-    "@atproto/syntax": "0.7.2"
+    "@atproto/syntax": "0.7.2",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

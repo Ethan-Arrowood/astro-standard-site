@@ -1,34 +1,39 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { Client } from "@atproto/lex";
 import { PasswordSession } from "@atproto/lex-password-session";
 import { isValidTid } from "@atproto/syntax";
 import type { AstroIntegration } from "astro";
 
+import {
+	buildDocumentRecord,
+	DOCUMENT_COLLECTION,
+	readDocuments,
+	RKEY_FIELD,
+	type DocumentRecord,
+	type DocumentSource,
+} from "./documents.ts";
+
+export {
+	buildDocumentRecord,
+	DOCUMENT_COLLECTION,
+	fillDocumentKeys,
+	pagePath,
+	readDocuments,
+	RKEY_FIELD,
+	type DocumentRecord,
+	type DocumentSource,
+} from "./documents.ts";
+export { generateTid } from "./tid.ts";
+
 /** Collection NSID for the publication record. */
 export const PUBLICATION_COLLECTION = "site.standard.publication";
 
-/** Alphabet of the base32-sortable encoding used by TIDs. */
-const S32_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz";
-
-/**
- * Generate a TID (timestamp identifier) to use as a publication's record key.
- * Run once per publication and store the result in the integration options.
- *
- * Layout: a zero bit, 53 bits of microseconds since the Unix epoch, and a
- * 10-bit random clock ID, encoded as 13 base32-sortable characters.
- */
-export function generateTid(now: number = Date.now()): string {
-	const micros = BigInt(now) * 1000n;
-	const clockId = BigInt(Math.floor(Math.random() * 1024));
-	let value = (micros << 10n) | clockId;
-	let tid = "";
-
-	for (let i = 0; i < 13; i++) {
-		tid = S32_ALPHABET[Number(value & 31n)] + tid;
-		value >>= 5n;
-	}
-
-	return tid;
-}
+/** Virtual module that exposes the resolved AT-URIs to pages and layouts. */
+const VIRTUAL_MODULE_ID = "virtual:astro-standard-site";
+const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 
 /** Default PDS host for accounts that have not migrated off Bluesky's infra. */
 const DEFAULT_SERVICE = "https://bsky.social";
@@ -52,6 +57,17 @@ export interface StandardSiteOptions {
 		description?: string;
 		/** Defaults to the consuming project's `site` config value. */
 		url?: string;
+	};
+
+	/**
+	 * Posts to publish as site.standard.document records. Each post's
+	 * frontmatter needs `title` and `pubDate`, and may set `description` and
+	 * `editDate`. Its record key lives in `standardSiteRkey`; add missing keys
+	 * with the `astro-standard-site-keys` command.
+	 */
+	documents?: {
+		/** Glob of post files, relative to the project root. */
+		pattern: string;
 	};
 }
 
@@ -147,21 +163,27 @@ export function buildPublicationRecord(
 	};
 }
 
+
+/** One record to put in the authenticated repo. */
+export interface RecordWrite {
+	rkey: string;
+	record: PublicationRecord | DocumentRecord;
+}
+
 /**
- * Idempotently create-or-update the singleton publication record. Safe to call
- * on every gated build.
+ * Log in once and idempotently create-or-update each record. Safe to call on
+ * every gated build.
  *
  * `expectedDid` guards a real footgun: if BSKY_APP_PASSWORD belongs to a
- * different account than `identifier`, the record would be written to one repo
+ * different account than `identifier`, records would be written to one repo
  * while .well-known advertises another.
  */
-export async function upsertPublication(
+export async function putRecords(
 	service: string,
 	identifier: string,
 	expectedDid: string,
-	rkey: string,
-	record: PublicationRecord,
 	password: string,
+	writes: RecordWrite[],
 ): Promise<void> {
 	// AsyncDisposable: logs out when this scope exits, including on throw.
 	await using session = await PasswordSession.login({
@@ -173,12 +195,28 @@ export async function upsertPublication(
 	if (session.did !== expectedDid) {
 		throw new Error(
 			`BSKY_APP_PASSWORD authenticated as ${session.did}, but "${identifier}" resolves to ${expectedDid}. ` +
-				"Refusing to write the publication record to a different repo than .well-known advertises.",
+				"Refusing to write records to a different repo than .well-known advertises.",
 		);
 	}
 
-	// The repo defaults to the session's DID, which we just checked.
-	await new Client(session).putRecord(record, rkey);
+	const client = new Client(session);
+
+	// Sequential: a handful of records, and a failure should stop the rest.
+	for (const { rkey, record } of writes) {
+		// The repo defaults to the session's DID, which we just checked.
+		await client.putRecord(record, rkey);
+	}
+}
+
+/** Source of the virtual module, with the resolved DID baked in. */
+function virtualModuleSource(did: string, publicationUri: string): string {
+	return [
+		`export const did = ${JSON.stringify(did)};`,
+		`export const publicationUri = ${JSON.stringify(publicationUri)};`,
+		"export function documentUri(rkey) {",
+		`\treturn rkey ? \`at://\${did}/${DOCUMENT_COLLECTION}/\${rkey}\` : undefined;`,
+		"}",
+	].join("\n");
 }
 
 export default function standardSite(
@@ -210,6 +248,16 @@ export default function standardSite(
 				const did = await resolveDid(service, options.identifier);
 				const publicationUri = `at://${did}/${PUBLICATION_COLLECTION}/${rkey}`;
 
+				// Read on every build so a malformed post fails `astro dev` too.
+				const root = fileURLToPath(config.root);
+				const documents: DocumentSource[] = options.documents
+					? await readDocuments(
+							options.documents.pattern,
+							root,
+							fileURLToPath(new URL("pages/", config.srcDir)),
+						)
+					: [];
+
 				// Two independent signals must agree before we touch the network:
 				// an explicit opt-in, and an actual production build.
 				const repoWriteEnabled =
@@ -226,34 +274,50 @@ export default function standardSite(
 						);
 					}
 
-					const record = buildPublicationRecord(
-						publication,
-						config.site,
-					);
+					const missing = documents.filter((doc) => doc.rkey === undefined);
 
-					await upsertPublication(
-						service,
-						options.identifier,
-						did,
-						rkey,
-						record,
-						password,
-					);
+					if (missing.length > 0) {
+						throw new Error(
+							`These posts have no "${RKEY_FIELD}" in their frontmatter:\n` +
+								missing.map((doc) => `  ${path.relative(root, doc.file)}`).join("\n") +
+								`\nRun: astro-standard-site-keys ${JSON.stringify(options.documents?.pattern)}`,
+						);
+					}
+
+					await putRecords(service, options.identifier, did, password, [
+						{ rkey, record: buildPublicationRecord(publication, config.site) },
+						...documents.map((doc) => ({
+							rkey: doc.rkey!,
+							record: buildDocumentRecord(doc, publicationUri),
+						})),
+					]);
 
 					logger.info(
-						`Wrote ${publicationUri}`,
+						`Wrote ${publicationUri} and ${documents.length} document record(s).`,
 					);
 				} else {
-					logger.info("Repo writes disabled; skipping publication record sync.");
+					logger.info("Repo writes disabled; skipping record sync.");
 				}
 
-				// Hand the publication's AT-URI to the injected route, which is compiled as
-				// its own module and cannot read this closure.
+				// Pages, layouts, and the injected route are compiled as their own
+				// modules and cannot read this closure, so expose the URIs here.
+				const source = virtualModuleSource(did, publicationUri);
+
 				updateConfig({
 					vite: {
-						define: {
-							__STANDARD_SITE_PUBLICATION_URI__: JSON.stringify(publicationUri),
-						},
+						plugins: [
+							{
+								name: "astro-standard-site",
+								resolveId(id: string) {
+									return id === VIRTUAL_MODULE_ID
+										? RESOLVED_VIRTUAL_MODULE_ID
+										: undefined;
+								},
+								load(id: string) {
+									return id === RESOLVED_VIRTUAL_MODULE_ID ? source : undefined;
+								},
+							},
+						],
 					},
 				});
 
@@ -261,6 +325,16 @@ export default function standardSite(
 					pattern: `/.well-known/${PUBLICATION_COLLECTION}`,
 					entrypoint: new URL("./site.standard.publication.ts", import.meta.url),
 					prerender: true,
+				});
+			},
+			"astro:config:done": async ({ injectTypes }) => {
+				// Types for the virtual module, so consuming projects can import it.
+				injectTypes({
+					filename: "types.d.ts",
+					content: await readFile(
+						new URL("./astro-standard-site.d.ts", import.meta.url),
+						"utf8",
+					),
 				});
 			},
 		},
