@@ -12,7 +12,6 @@
 	"include": [
 		"standardSiteIntegration.ts",
 		"documents.ts",
-		"tid.ts",
 		"keys.ts",
 		"site.standard.publication.ts",
 		"astro-standard-site.d.ts"

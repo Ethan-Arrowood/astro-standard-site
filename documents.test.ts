@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
+import { TID } from "@atproto/common-web";
 import { isValidTid } from "@atproto/syntax";
 
 import {
@@ -187,6 +188,10 @@ describe("fillDocumentKeys", () => {
 		const rkeyOf = (title: string) => docs.find((doc) => doc.title === title)?.rkey ?? "";
 
 		assert.ok(rkeyOf("Old") < rkeyOf("New"));
+		assert.equal(
+			TID.fromStr(rkeyOf("New")).timestamp(),
+			Date.UTC(2026, 0, 1) * 1000,
+		);
 	});
 
 	it("leaves posts that already have a key unchanged", async () => {

@@ -26,7 +26,7 @@ export {
 	type DocumentRecord,
 	type DocumentSource,
 } from "./documents.ts";
-export { generateTid } from "./tid.ts";
+export { TID } from "@atproto/common-web";
 
 /** Collection NSID for the publication record. */
 export const PUBLICATION_COLLECTION = "site.standard.publication";
@@ -49,7 +49,7 @@ export interface StandardSiteOptions {
 	publication: {
 		/**
 		 * Record key of the publication. The lexicon requires a TID, which must
-		 * stay the same across builds. Generate one once with `generateTid()`.
+		 * stay the same across builds. Generate one once with `TID.nextStr()`.
 		 */
 		rkey: string;
 		/** Human-readable publication name. */
@@ -210,13 +210,15 @@ export async function putRecords(
 
 /** Source of the virtual module, with the resolved DID baked in. */
 function virtualModuleSource(did: string, publicationUri: string): string {
-	return [
-		`export const did = ${JSON.stringify(did)};`,
-		`export const publicationUri = ${JSON.stringify(publicationUri)};`,
-		"export function documentUri(rkey) {",
-		`\treturn rkey ? \`at://\${did}/${DOCUMENT_COLLECTION}/\${rkey}\` : undefined;`,
-		"}",
-	].join("\n");
+	const documentPrefix = `at://${did}/${DOCUMENT_COLLECTION}/`;
+
+	return `
+export const did = ${JSON.stringify(did)};
+export const publicationUri = ${JSON.stringify(publicationUri)};
+export function documentUri(rkey) {
+	return rkey ? ${JSON.stringify(documentPrefix)} + rkey : undefined;
+}
+`;
 }
 
 export default function standardSite(
@@ -230,7 +232,7 @@ export default function standardSite(
 	if (!isValidTid(rkey)) {
 		throw new Error(
 			`publication.rkey must be a TID (site.standard.publication uses tid record keys), received: ${JSON.stringify(rkey)}. ` +
-				"Generate one with generateTid().",
+				"Generate one with TID.nextStr().",
 		);
 	}
 

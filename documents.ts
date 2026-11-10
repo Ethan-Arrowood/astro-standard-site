@@ -1,10 +1,9 @@
 import { glob, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { TID } from "@atproto/common-web";
 import { isValidTid } from "@atproto/syntax";
 import { parse } from "yaml";
-
-import { generateTid } from "./tid.ts";
 
 /** Collection NSID for per-post document records. */
 export const DOCUMENT_COLLECTION = "site.standard.document";
@@ -186,7 +185,13 @@ export async function fillDocumentKeys(
 
 		if (data[RKEY_FIELD] !== undefined) continue;
 
-		const tid = generateTid(parseDate(file, "pubDate", data["pubDate"]).getTime());
+		// TIDs carry microseconds. The clock ID only separates TIDs created at
+		// the same microsecond; atproto randomizes it within the bottom 32.
+		const publishedAt = parseDate(file, "pubDate", data["pubDate"]);
+		const tid = TID.fromTime(
+			publishedAt.getTime() * 1000,
+			Math.floor(Math.random() * 32),
+		).toString();
 		const match = FRONTMATTER.exec(source)!;
 		const yamlEnd = match[0].lastIndexOf("---");
 		const newline = source.includes("\r\n") ? "\r\n" : "\n";

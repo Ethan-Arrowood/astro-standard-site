@@ -49,7 +49,7 @@ Both lexicons use TID record keys. A key must never change once its record is pu
 Generate the publication key once and put it in the config:
 
 ```bash
-node -e 'import("@arrowood.dev/astro-standard-site").then((m) => console.log(m.generateTid()))'
+node -e 'import("@arrowood.dev/astro-standard-site").then((m) => console.log(m.TID.nextStr()))'
 ```
 
 Each post stores its key in a `standardSiteRkey` frontmatter field. Add keys to posts that lack one, then commit the changes:
