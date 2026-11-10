@@ -1,3 +1,5 @@
+import { Client } from "@atproto/lex";
+import { PasswordSession } from "@atproto/lex-password-session";
 import type { AstroIntegration } from "astro";
 
 /** Collection NSID for the singleton publication record. */
@@ -79,31 +81,76 @@ export async function resolveDid(
 }
 
 /**
+ * Fields of the site.standard.publication record this integration writes.
+ * A type alias, not an interface, so it satisfies lex's index-signature
+ * `LexMap` constraint on `putRecord`.
+ */
+export type PublicationRecord = {
+	$type: typeof PUBLICATION_COLLECTION;
+	name: string;
+	url: string;
+	description?: string;
+};
+
+/**
+ * Build the publication record from the integration options. `url` falls back
+ * to the consuming project's `site` config value, since the lexicon requires it.
+ */
+export function buildPublicationRecord(
+	publication: StandardSiteOptions["publication"],
+	site: string | undefined,
+): PublicationRecord {
+	const url = publication.url ?? site;
+
+	if (!url) {
+		throw new Error(
+			"site.standard.publication requires a url. " +
+				"Set `publication.url` in the integration options or `site` in your Astro config.",
+		);
+	}
+
+	return {
+		$type: PUBLICATION_COLLECTION,
+		name: publication.name,
+		url,
+		// Omit rather than write `undefined`, which is not a valid lexicon value.
+		...(publication.description !== undefined && {
+			description: publication.description,
+		}),
+	};
+}
+
+/**
  * Idempotently create-or-update the singleton publication record. Safe to call
  * on every gated build.
  *
- * Verified API shape:
- *   PasswordSession.login({ service, identifier, password }) -> PasswordSession
- *     - exposes `.did`, and implements AsyncDisposable, so `await using` will
- *       log out when the scope exits.
- *   new Client(session)
- *   client.putRecord(record, rkey) -> record carries its own `$type`; the repo
- *     is inferred from the session, so `did` is not passed through.
- *
- * `expectedDid` exists to guard a real footgun: if BSKY_APP_PASSWORD belongs to
- * a different account than `options.identifier`, the record would be written to
- * one repo while .well-known advertises another. Assert session.did matches.
+ * `expectedDid` guards a real footgun: if BSKY_APP_PASSWORD belongs to a
+ * different account than `identifier`, the record would be written to one repo
+ * while .well-known advertises another.
  */
-async function upsertPublication(
+export async function upsertPublication(
 	service: string,
+	identifier: string,
 	expectedDid: string,
-	options: StandardSiteOptions,
+	record: PublicationRecord,
 	password: string,
 ): Promise<void> {
-	// TODO: login, assert session.did === expectedDid, then
-	// client.putRecord({ $type: PUBLICATION_COLLECTION, ...fields }, PUBLICATION_RKEY)
-	// Record fields come from options.publication (name, description, url).
-	throw new Error("upsertPublication not implemented");
+	// AsyncDisposable: logs out when this scope exits, including on throw.
+	await using session = await PasswordSession.login({
+		service,
+		identifier,
+		password,
+	});
+
+	if (session.did !== expectedDid) {
+		throw new Error(
+			`BSKY_APP_PASSWORD authenticated as ${session.did}, but "${identifier}" resolves to ${expectedDid}. ` +
+				"Refusing to write the publication record to a different repo than .well-known advertises.",
+		);
+	}
+
+	// The repo defaults to the session's DID, which we just checked.
+	await new Client(session).putRecord(record, PUBLICATION_RKEY);
 }
 
 export default function standardSite(
@@ -114,7 +161,13 @@ export default function standardSite(
 	return {
 		name: "astro-standard-site",
 		hooks: {
-			"astro:config:setup": async ({ command, updateConfig, injectRoute, logger }) => {
+			"astro:config:setup": async ({
+				command,
+				config,
+				updateConfig,
+				injectRoute,
+				logger,
+			}) => {
 				// Public, unauthenticated: always available, including in dev.
 				const did = await resolveDid(service, options.identifier);
 
@@ -134,7 +187,22 @@ export default function standardSite(
 						);
 					}
 
-					await upsertPublication(service, did, options, password);
+					const record = buildPublicationRecord(
+						options.publication,
+						config.site,
+					);
+
+					await upsertPublication(
+						service,
+						options.identifier,
+						did,
+						record,
+						password,
+					);
+
+					logger.info(
+						`Wrote at://${did}/${PUBLICATION_COLLECTION}/${PUBLICATION_RKEY}`,
+					);
 				} else {
 					logger.info("Repo writes disabled; skipping publication record sync.");
 				}

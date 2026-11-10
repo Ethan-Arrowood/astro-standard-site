@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
 
-import { resolveDid } from "./standardSiteIntegration.ts";
+import { PasswordSession } from "@atproto/lex-password-session";
+import type { AstroIntegration } from "astro";
+
+import standardSite, {
+	buildPublicationRecord,
+	resolveDid,
+	upsertPublication,
+	type PublicationRecord,
+} from "./standardSiteIntegration.ts";
 
 const SERVICE = "https://pds.example";
 const DID = "did:plc:czn36zm5n7syrcbxzmkcjrwg";
@@ -124,6 +132,195 @@ describe("resolveDid", () => {
 				});
 			});
 		}
+	});
+});
+
+const RECORD: PublicationRecord = {
+	$type: "site.standard.publication",
+	name: "Ethan Arrowood",
+	url: "https://ethanarrowood.com",
+};
+
+interface CapturedRequest {
+	path: string;
+	body: unknown;
+}
+
+/**
+ * Replace PasswordSession.login with a fake session authenticated as `did`.
+ * The fake is a real lex Agent, so the real Client builds the XRPC request and
+ * the fetchHandler captures it instead of sending it.
+ */
+function stubLogin(did: string) {
+	const requests: CapturedRequest[] = [];
+	const dispose = mock.fn(async () => {});
+
+	const session = {
+		did,
+		async fetchHandler(path: string, init: RequestInit) {
+			requests.push({ path, body: JSON.parse(String(init.body)) });
+			return Response.json({
+				uri: `at://${did}/site.standard.publication/self`,
+				cid: "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm",
+			});
+		},
+		[Symbol.asyncDispose]: dispose,
+	};
+
+	const login = mock.method(PasswordSession, "login", async () => session);
+
+	return { login, requests, dispose };
+}
+
+describe("buildPublicationRecord", () => {
+	it("falls back to the site config value for url", () => {
+		assert.deepEqual(
+			buildPublicationRecord({ name: "Ethan Arrowood" }, "https://ethanarrowood.com"),
+			RECORD,
+		);
+	});
+
+	it("prefers an explicit publication.url over the site config value", () => {
+		const record = buildPublicationRecord(
+			{ name: "Ethan Arrowood", url: "https://blog.example" },
+			"https://ethanarrowood.com",
+		);
+
+		assert.equal(record.url, "https://blog.example");
+	});
+
+	it("throws when neither publication.url nor site is set", () => {
+		assert.throws(
+			() => buildPublicationRecord({ name: "Ethan Arrowood" }, undefined),
+			/requires a url/,
+		);
+	});
+
+	it("includes description only when provided", () => {
+		const without = buildPublicationRecord({ name: "n" }, "https://a.example");
+		const withDescription = buildPublicationRecord(
+			{ name: "n", description: "d" },
+			"https://a.example",
+		);
+
+		assert.ok(!("description" in without));
+		assert.equal(withDescription.description, "d");
+	});
+});
+
+describe("upsertPublication", () => {
+	it("logs in and puts the record at rkey self in the session's repo", async () => {
+		const { login, requests, dispose } = stubLogin(DID);
+
+		await upsertPublication(SERVICE, "arrowood.dev", DID, RECORD, "app-password");
+
+		assert.deepEqual(login.mock.calls[0]?.arguments[0], {
+			service: SERVICE,
+			identifier: "arrowood.dev",
+			password: "app-password",
+		});
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0]?.path, "/xrpc/com.atproto.repo.putRecord");
+		assert.deepEqual(requests[0]?.body, {
+			repo: DID,
+			collection: "site.standard.publication",
+			rkey: "self",
+			record: RECORD,
+		});
+		assert.equal(dispose.mock.callCount(), 1);
+	});
+
+	it("refuses to write when the session belongs to a different DID", async () => {
+		const { requests, dispose } = stubLogin("did:plc:someoneelse");
+
+		await assert.rejects(
+			upsertPublication(SERVICE, "arrowood.dev", DID, RECORD, "app-password"),
+			(error: Error) => {
+				assert.match(error.message, /did:plc:someoneelse/);
+				assert.match(error.message, new RegExp(DID));
+				return true;
+			},
+		);
+
+		assert.equal(requests.length, 0);
+		// The session is still logged out when the guard throws.
+		assert.equal(dispose.mock.callCount(), 1);
+	});
+});
+
+describe("astro:config:setup", () => {
+	type SetupParams = Parameters<
+		NonNullable<AstroIntegration["hooks"]["astro:config:setup"]>
+	>[0];
+
+	const ENV_KEYS = ["ENABLE_REPO_WRITE", "BSKY_APP_PASSWORD"] as const;
+	const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+
+	afterEach(() => {
+		for (const key of ENV_KEYS) {
+			if (savedEnv[key] === undefined) delete process.env[key];
+			else process.env[key] = savedEnv[key];
+		}
+	});
+
+	function setEnv(env: Partial<Record<(typeof ENV_KEYS)[number], string>>) {
+		for (const key of ENV_KEYS) {
+			if (env[key] === undefined) delete process.env[key];
+			else process.env[key] = env[key];
+		}
+	}
+
+	/** Run the hook with a DID identifier, so resolveDid never fetches. */
+	async function runSetup(command: SetupParams["command"]) {
+		const injectRoute = mock.fn();
+		const params = {
+			command,
+			config: { site: "https://ethanarrowood.com" },
+			updateConfig: mock.fn(),
+			injectRoute,
+			logger: { info: mock.fn() },
+		} as unknown as SetupParams;
+
+		await standardSite({
+			identifier: DID,
+			publication: { name: "Ethan Arrowood" },
+		}).hooks["astro:config:setup"]?.(params);
+
+		return { injectRoute };
+	}
+
+	for (const [label, command, env] of [
+		["the flag is unset", "build", {}],
+		["the flag is not exactly \"true\"", "build", { ENABLE_REPO_WRITE: "1" }],
+		["the command is dev", "dev", { ENABLE_REPO_WRITE: "true", BSKY_APP_PASSWORD: "x" }],
+	] as const) {
+		it(`skips the write when ${label}`, async () => {
+			setEnv(env);
+			const { login } = stubLogin(DID);
+
+			const { injectRoute } = await runSetup(command);
+
+			assert.equal(login.mock.callCount(), 0);
+			assert.equal(injectRoute.mock.callCount(), 1);
+		});
+	}
+
+	it("throws when writes are enabled without BSKY_APP_PASSWORD", async () => {
+		setEnv({ ENABLE_REPO_WRITE: "true" });
+		const { login } = stubLogin(DID);
+
+		await assert.rejects(runSetup("build"), /BSKY_APP_PASSWORD is not set/);
+		assert.equal(login.mock.callCount(), 0);
+	});
+
+	it("writes the publication record when enabled on build", async () => {
+		setEnv({ ENABLE_REPO_WRITE: "true", BSKY_APP_PASSWORD: "app-password" });
+		const { requests } = stubLogin(DID);
+
+		await runSetup("build");
+
+		assert.equal(requests.length, 1);
+		assert.deepEqual((requests[0]?.body as { record: unknown }).record, RECORD);
 	});
 });
 
