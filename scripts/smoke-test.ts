@@ -52,7 +52,7 @@ try {
 		throw new Error(`${PACKAGE_NAME} resolved outside the consumer: ${entry}`);
 	}
 
-	const { default: standardSite, generateTid } = (await import(
+	const { default: standardSite, TID } = (await import(
 		pathToFileURL(entry).href
 	)) as Integration;
 
@@ -60,7 +60,7 @@ try {
 
 	await standardSite({
 		identifier: "did:plc:example",
-		publication: { rkey: generateTid(), name: "Smoke test" },
+		publication: { rkey: TID.nextStr(), name: "Smoke test" },
 	}).hooks["astro:config:setup"]?.({
 		command: "dev",
 		config: {

@@ -6,12 +6,10 @@ import { afterEach, before, after, describe, it, mock } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { PasswordSession } from "@atproto/lex-password-session";
-import { isValidTid } from "@atproto/syntax";
 import type { AstroIntegration } from "astro";
 
 import standardSite, {
 	buildPublicationRecord,
-	generateTid,
 	resolveDid,
 	putRecords,
 	type PublicationRecord,
@@ -183,21 +181,6 @@ function stubLogin(did: string) {
 
 	return { login, requests, disposed };
 }
-
-describe("generateTid", () => {
-	it("produces valid TIDs", () => {
-		for (let i = 0; i < 100; i++) {
-			assert.ok(isValidTid(generateTid()));
-		}
-	});
-
-	it("sorts by time", () => {
-		const earlier = generateTid(Date.UTC(2026, 0, 1));
-		const later = generateTid(Date.UTC(2026, 0, 2));
-
-		assert.ok(earlier < later);
-	});
-});
 
 describe("buildPublicationRecord", () => {
 	it("falls back to the site config value for url", () => {

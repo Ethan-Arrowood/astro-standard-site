@@ -41,6 +41,7 @@
     "astro": ">=5.0.0"
   },
   "dependencies": {
+    "@atproto/common-web": "0.5.17",
     "@atproto/lex": "0.4.7",
     "@atproto/lex-password-session": "0.3.2",
     "@atproto/syntax": "0.7.7",

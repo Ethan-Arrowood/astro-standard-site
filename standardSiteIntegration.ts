@@ -26,7 +26,7 @@ export {
 	type DocumentRecord,
 	type DocumentSource,
 } from "./documents.ts";
-export { generateTid } from "./tid.ts";
+export { TID } from "@atproto/common-web";
 
 /** Collection NSID for the publication record. */
 export const PUBLICATION_COLLECTION = "site.standard.publication";
@@ -49,7 +49,7 @@ export interface StandardSiteOptions {
 	publication: {
 		/**
 		 * Record key of the publication. The lexicon requires a TID, which must
-		 * stay the same across builds. Generate one once with `generateTid()`.
+		 * stay the same across builds. Generate one once with `TID.nextStr()`.
 		 */
 		rkey: string;
 		/** Human-readable publication name. */
@@ -230,7 +230,7 @@ export default function standardSite(
 	if (!isValidTid(rkey)) {
 		throw new Error(
 			`publication.rkey must be a TID (site.standard.publication uses tid record keys), received: ${JSON.stringify(rkey)}. ` +
-				"Generate one with generateTid().",
+				"Generate one with TID.nextStr().",
 		);
 	}
 
