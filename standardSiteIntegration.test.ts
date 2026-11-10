@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, before, after, describe, it, mock } from "node:test";
@@ -382,6 +382,19 @@ describe("astro:config:setup", () => {
 			assert.equal(injectRoute.mock.callCount(), 1);
 		});
 	}
+
+	it("injects the .well-known route from a file that exists", async () => {
+		setEnv({});
+
+		const { injectRoute } = await runSetup("dev");
+		const route = injectRoute.mock.calls[0]?.arguments[0] as {
+			pattern: string;
+			entrypoint: URL;
+		};
+
+		assert.equal(route.pattern, "/.well-known/site.standard.publication");
+		await access(route.entrypoint);
+	});
 
 	it("rejects an rkey that is not a TID before touching the network", async () => {
 		setEnv({});

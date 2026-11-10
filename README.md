@@ -108,14 +108,18 @@ Before writing, the integration checks that the app password belongs to the DID 
 ## Limitations
 
 - Deleting a post doesn't delete its document record. Remove it from the repo by hand.
-- The package ships TypeScript source and relies on Node's type stripping, which Node doesn't apply inside `node_modules`. It works when linked from a local path (`file:`). Publishing to npm needs a build step first.
 - Posts are read from files, not from Astro content collections.
 
 ## Development
 
+Requires Node 24 or later.
+
 ```bash
 npm test
-npx tsc --noEmit
+npm run typecheck
+npm run build
 ```
+
+Tests run against the TypeScript source. `npm run build` compiles to `dist/`, which is what the package exports. A project that links this package from a local path (`file:`) loads `dist/`, so rebuild after each change.
 
 Set `LIVE=1` to also run tests that call the real Bluesky API.

@@ -323,7 +323,10 @@ export default function standardSite(
 
 				injectRoute({
 					pattern: `/.well-known/${PUBLICATION_COLLECTION}`,
-					entrypoint: new URL("./site.standard.publication.ts", import.meta.url),
+					entrypoint: new URL(
+						`./site.standard.publication${path.extname(import.meta.url)}`,
+						import.meta.url,
+					),
 					prerender: true,
 				});
 			},

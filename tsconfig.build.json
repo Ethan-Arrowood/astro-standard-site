@@ -1,0 +1,21 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": false,
+		"outDir": "dist",
+		"rootDir": ".",
+		"declaration": true,
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"rewriteRelativeImportExtensions": true
+	},
+	"include": [
+		"standardSiteIntegration.ts",
+		"documents.ts",
+		"tid.ts",
+		"keys.ts",
+		"site.standard.publication.ts",
+		"astro-standard-site.d.ts"
+	],
+	"exclude": ["**/*.test.ts", "dist"]
+}

@@ -4,8 +4,15 @@
   "description": "Astro integration that publishes your site to the ATmosphere using Standard.site lexicons.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ethan-Arrowood/astro-standard-site.git"
+  },
   "scripts": {
-    "test": "node --test"
+    "build": "tsc -p tsconfig.build.json && cp astro-standard-site.d.ts dist/",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "prepack": "npm run build"
   },
   "keywords": [
     "astro-integration",
@@ -16,20 +23,17 @@
     "standard.site"
   ],
   "exports": {
-    ".": "./standardSiteIntegration.ts",
-    "./site.standard.publication.ts": "./site.standard.publication.ts",
+    ".": {
+      "types": "./dist/standardSiteIntegration.d.ts",
+      "default": "./dist/standardSiteIntegration.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
-    "astro-standard-site-keys": "./keys.ts"
+    "astro-standard-site-keys": "./dist/keys.js"
   },
   "files": [
-    "standardSiteIntegration.ts",
-    "documents.ts",
-    "tid.ts",
-    "keys.ts",
-    "site.standard.publication.ts",
-    "astro-standard-site.d.ts",
+    "dist",
     "README.md"
   ],
   "peerDependencies": {
@@ -45,5 +49,8 @@
     "@types/node": "24.13.3",
     "astro": "6.1.9",
     "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

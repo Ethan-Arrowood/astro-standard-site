@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [24, 26]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Install the packed tarball the way a consumer would, outside the repo,
+      # and check that the built entry point and its route file load.
+      - name: Smoke-test the package
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y > /dev/null
+          npm install "$RUNNER_TEMP"/arrowood.dev-astro-standard-site-*.tgz astro
+          node --input-type=module -e '
+            const { default: standardSite, generateTid } = await import("@arrowood.dev/astro-standard-site");
+            const { access } = await import("node:fs/promises");
+            let entrypoint;
+            await standardSite({
+              identifier: "did:plc:example",
+              publication: { rkey: generateTid(), name: "Smoke test" },
+            }).hooks["astro:config:setup"]({
+              command: "dev",
+              config: { root: new URL("file:///tmp/"), srcDir: new URL("file:///tmp/src/") },
+              updateConfig() {},
+              injectRoute(route) { entrypoint = route.entrypoint; },
+              logger: { info() {} },
+            });
+            await access(entrypoint);
+            console.log("Loaded", entrypoint.href);
+          '
+          npx astro-standard-site-keys "nothing/*.md"
