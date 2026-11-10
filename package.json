@@ -1,6 +1,6 @@
 {
   "name": "@arrowood.dev/astro-standard-site",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Astro integration that publishes your site to the ATmosphere using Standard.site lexicons.",
   "type": "module",
   "license": "MIT",
