@@ -161,7 +161,9 @@ interface CapturedRequest {
  */
 function stubLogin(did: string) {
 	const requests: CapturedRequest[] = [];
-	const dispose = mock.fn(async () => {});
+	// A plain function, not mock.fn(): Node 24's `await using` rejects a mock
+	// as the dispose method ("is not a function").
+	const disposed = { count: 0 };
 
 	const session = {
 		did,
@@ -172,12 +174,14 @@ function stubLogin(did: string) {
 				cid: "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm",
 			});
 		},
-		[Symbol.asyncDispose]: dispose,
+		async [Symbol.asyncDispose]() {
+			disposed.count++;
+		},
 	};
 
 	const login = mock.method(PasswordSession, "login", async () => session);
 
-	return { login, requests, dispose };
+	return { login, requests, disposed };
 }
 
 describe("generateTid", () => {
@@ -242,7 +246,7 @@ describe("putRecords", () => {
 	} as const;
 
 	it("logs in once and puts each record at its rkey in the session's repo", async () => {
-		const { login, requests, dispose } = stubLogin(DID);
+		const { login, requests, disposed } = stubLogin(DID);
 
 		await putRecords(SERVICE, "arrowood.dev", DID, "app-password", [
 			{ rkey: RKEY, record: RECORD },
@@ -263,11 +267,11 @@ describe("putRecords", () => {
 			{ repo: DID, collection: "site.standard.publication", rkey: RKEY, record: RECORD },
 			{ repo: DID, collection: "site.standard.document", rkey: DOC_RKEY, record: DOC },
 		]);
-		assert.equal(dispose.mock.callCount(), 1);
+		assert.equal(disposed.count, 1);
 	});
 
 	it("refuses to write when the session belongs to a different DID", async () => {
-		const { requests, dispose } = stubLogin("did:plc:someoneelse");
+		const { requests, disposed } = stubLogin("did:plc:someoneelse");
 
 		await assert.rejects(
 			putRecords(SERVICE, "arrowood.dev", DID, "app-password", [
@@ -282,7 +286,7 @@ describe("putRecords", () => {
 
 		assert.equal(requests.length, 0);
 		// The session is still logged out when the guard throws.
-		assert.equal(dispose.mock.callCount(), 1);
+		assert.equal(disposed.count, 1);
 	});
 });
 
