@@ -1,12 +1,34 @@
 import { Client } from "@atproto/lex";
 import { PasswordSession } from "@atproto/lex-password-session";
+import { isValidTid } from "@atproto/syntax";
 import type { AstroIntegration } from "astro";
 
-/** Collection NSID for the singleton publication record. */
+/** Collection NSID for the publication record. */
 export const PUBLICATION_COLLECTION = "site.standard.publication";
 
-/** The publication record is a singleton, keyed by the literal rkey "self". */
-export const PUBLICATION_RKEY = "self";
+/** Alphabet of the base32-sortable encoding used by TIDs. */
+const S32_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz";
+
+/**
+ * Generate a TID (timestamp identifier) to use as a publication's record key.
+ * Run once per publication and store the result in the integration options.
+ *
+ * Layout: a zero bit, 53 bits of microseconds since the Unix epoch, and a
+ * 10-bit random clock ID, encoded as 13 base32-sortable characters.
+ */
+export function generateTid(now: number = Date.now()): string {
+	const micros = BigInt(now) * 1000n;
+	const clockId = BigInt(Math.floor(Math.random() * 1024));
+	let value = (micros << 10n) | clockId;
+	let tid = "";
+
+	for (let i = 0; i < 13; i++) {
+		tid = S32_ALPHABET[Number(value & 31n)] + tid;
+		value >>= 5n;
+	}
+
+	return tid;
+}
 
 /** Default PDS host for accounts that have not migrated off Bluesky's infra. */
 const DEFAULT_SERVICE = "https://bsky.social";
@@ -20,6 +42,11 @@ export interface StandardSiteOptions {
 
 	/** Metadata written to the site.standard.publication record. */
 	publication: {
+		/**
+		 * Record key of the publication. The lexicon requires a TID, which must
+		 * stay the same across builds. Generate one once with `generateTid()`.
+		 */
+		rkey: string;
 		/** Human-readable publication name. */
 		name: string;
 		description?: string;
@@ -97,7 +124,7 @@ export type PublicationRecord = {
  * to the consuming project's `site` config value, since the lexicon requires it.
  */
 export function buildPublicationRecord(
-	publication: StandardSiteOptions["publication"],
+	publication: Omit<StandardSiteOptions["publication"], "rkey">,
 	site: string | undefined,
 ): PublicationRecord {
 	const url = publication.url ?? site;
@@ -132,6 +159,7 @@ export async function upsertPublication(
 	service: string,
 	identifier: string,
 	expectedDid: string,
+	rkey: string,
 	record: PublicationRecord,
 	password: string,
 ): Promise<void> {
@@ -150,13 +178,23 @@ export async function upsertPublication(
 	}
 
 	// The repo defaults to the session's DID, which we just checked.
-	await new Client(session).putRecord(record, PUBLICATION_RKEY);
+	await new Client(session).putRecord(record, rkey);
 }
 
 export default function standardSite(
 	options: StandardSiteOptions,
 ): AstroIntegration {
 	const service = options.service ?? DEFAULT_SERVICE;
+	const { rkey, ...publication } = options.publication;
+
+	// Checked up front, outside the write gate: .well-known advertises this key
+	// on every build, so a bad one should fail `astro dev` too.
+	if (!isValidTid(rkey)) {
+		throw new Error(
+			`publication.rkey must be a TID (site.standard.publication uses tid record keys), received: ${JSON.stringify(rkey)}. ` +
+				"Generate one with generateTid().",
+		);
+	}
 
 	return {
 		name: "astro-standard-site",
@@ -170,6 +208,7 @@ export default function standardSite(
 			}) => {
 				// Public, unauthenticated: always available, including in dev.
 				const did = await resolveDid(service, options.identifier);
+				const publicationUri = `at://${did}/${PUBLICATION_COLLECTION}/${rkey}`;
 
 				// Two independent signals must agree before we touch the network:
 				// an explicit opt-in, and an actual production build.
@@ -188,7 +227,7 @@ export default function standardSite(
 					}
 
 					const record = buildPublicationRecord(
-						options.publication,
+						publication,
 						config.site,
 					);
 
@@ -196,23 +235,24 @@ export default function standardSite(
 						service,
 						options.identifier,
 						did,
+						rkey,
 						record,
 						password,
 					);
 
 					logger.info(
-						`Wrote at://${did}/${PUBLICATION_COLLECTION}/${PUBLICATION_RKEY}`,
+						`Wrote ${publicationUri}`,
 					);
 				} else {
 					logger.info("Repo writes disabled; skipping publication record sync.");
 				}
 
-				// Hand the resolved DID to the injected route, which is compiled as
+				// Hand the publication's AT-URI to the injected route, which is compiled as
 				// its own module and cannot read this closure.
 				updateConfig({
 					vite: {
 						define: {
-							__STANDARD_SITE_DID__: JSON.stringify(did),
+							__STANDARD_SITE_PUBLICATION_URI__: JSON.stringify(publicationUri),
 						},
 					},
 				});

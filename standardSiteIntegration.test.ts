@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
 
 import { PasswordSession } from "@atproto/lex-password-session";
+import { isValidTid } from "@atproto/syntax";
 import type { AstroIntegration } from "astro";
 
 import standardSite, {
 	buildPublicationRecord,
+	generateTid,
 	resolveDid,
 	upsertPublication,
 	type PublicationRecord,
@@ -135,6 +137,8 @@ describe("resolveDid", () => {
 	});
 });
 
+const RKEY = "3m4q7ia2xxs2a";
+
 const RECORD: PublicationRecord = {
 	$type: "site.standard.publication",
 	name: "Ethan Arrowood",
@@ -160,7 +164,7 @@ function stubLogin(did: string) {
 		async fetchHandler(path: string, init: RequestInit) {
 			requests.push({ path, body: JSON.parse(String(init.body)) });
 			return Response.json({
-				uri: `at://${did}/site.standard.publication/self`,
+				uri: `at://${did}/site.standard.publication/${RKEY}`,
 				cid: "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm",
 			});
 		},
@@ -171,6 +175,21 @@ function stubLogin(did: string) {
 
 	return { login, requests, dispose };
 }
+
+describe("generateTid", () => {
+	it("produces valid TIDs", () => {
+		for (let i = 0; i < 100; i++) {
+			assert.ok(isValidTid(generateTid()));
+		}
+	});
+
+	it("sorts by time", () => {
+		const earlier = generateTid(Date.UTC(2026, 0, 1));
+		const later = generateTid(Date.UTC(2026, 0, 2));
+
+		assert.ok(earlier < later);
+	});
+});
 
 describe("buildPublicationRecord", () => {
 	it("falls back to the site config value for url", () => {
@@ -209,10 +228,10 @@ describe("buildPublicationRecord", () => {
 });
 
 describe("upsertPublication", () => {
-	it("logs in and puts the record at rkey self in the session's repo", async () => {
+	it("logs in and puts the record at the given rkey in the session's repo", async () => {
 		const { login, requests, dispose } = stubLogin(DID);
 
-		await upsertPublication(SERVICE, "arrowood.dev", DID, RECORD, "app-password");
+		await upsertPublication(SERVICE, "arrowood.dev", DID, RKEY, RECORD, "app-password");
 
 		assert.deepEqual(login.mock.calls[0]?.arguments[0], {
 			service: SERVICE,
@@ -224,7 +243,7 @@ describe("upsertPublication", () => {
 		assert.deepEqual(requests[0]?.body, {
 			repo: DID,
 			collection: "site.standard.publication",
-			rkey: "self",
+			rkey: RKEY,
 			record: RECORD,
 		});
 		assert.equal(dispose.mock.callCount(), 1);
@@ -234,7 +253,7 @@ describe("upsertPublication", () => {
 		const { requests, dispose } = stubLogin("did:plc:someoneelse");
 
 		await assert.rejects(
-			upsertPublication(SERVICE, "arrowood.dev", DID, RECORD, "app-password"),
+			upsertPublication(SERVICE, "arrowood.dev", DID, RKEY, RECORD, "app-password"),
 			(error: Error) => {
 				assert.match(error.message, /did:plc:someoneelse/);
 				assert.match(error.message, new RegExp(DID));
@@ -271,22 +290,23 @@ describe("astro:config:setup", () => {
 	}
 
 	/** Run the hook with a DID identifier, so resolveDid never fetches. */
-	async function runSetup(command: SetupParams["command"]) {
+	async function runSetup(command: SetupParams["command"], rkey = RKEY) {
 		const injectRoute = mock.fn();
+		const updateConfig = mock.fn();
 		const params = {
 			command,
 			config: { site: "https://ethanarrowood.com" },
-			updateConfig: mock.fn(),
+			updateConfig,
 			injectRoute,
 			logger: { info: mock.fn() },
 		} as unknown as SetupParams;
 
 		await standardSite({
 			identifier: DID,
-			publication: { name: "Ethan Arrowood" },
+			publication: { rkey, name: "Ethan Arrowood" },
 		}).hooks["astro:config:setup"]?.(params);
 
-		return { injectRoute };
+		return { injectRoute, updateConfig };
 	}
 
 	for (const [label, command, env] of [
@@ -305,6 +325,29 @@ describe("astro:config:setup", () => {
 		});
 	}
 
+	it("rejects an rkey that is not a TID before touching the network", async () => {
+		setEnv({});
+		forbiddenFetch();
+
+		await assert.rejects(runSetup("dev", "self"), /publication.rkey must be a TID/);
+	});
+
+	it("hands the publication AT-URI to the .well-known route", async () => {
+		setEnv({});
+
+		const { updateConfig } = await runSetup("dev");
+
+		assert.deepEqual(updateConfig.mock.calls[0]?.arguments[0], {
+			vite: {
+				define: {
+					__STANDARD_SITE_PUBLICATION_URI__: JSON.stringify(
+						`at://${DID}/site.standard.publication/${RKEY}`,
+					),
+				},
+			},
+		});
+	});
+
 	it("throws when writes are enabled without BSKY_APP_PASSWORD", async () => {
 		setEnv({ ENABLE_REPO_WRITE: "true" });
 		const { login } = stubLogin(DID);
@@ -320,7 +363,12 @@ describe("astro:config:setup", () => {
 		await runSetup("build");
 
 		assert.equal(requests.length, 1);
-		assert.deepEqual((requests[0]?.body as { record: unknown }).record, RECORD);
+		assert.deepEqual(requests[0]?.body, {
+			repo: DID,
+			collection: "site.standard.publication",
+			rkey: RKEY,
+			record: RECORD,
+		});
 	});
 });
 

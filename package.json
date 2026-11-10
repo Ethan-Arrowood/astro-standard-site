@@ -31,7 +31,8 @@
   },
   "dependencies": {
     "@atproto/lex": "0.3.0",
-    "@atproto/lex-password-session": "0.1.8"
+    "@atproto/lex-password-session": "0.1.8",
+    "@atproto/syntax": "0.7.2"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
